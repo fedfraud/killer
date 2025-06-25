@@ -40,7 +40,7 @@ class BTCUSDTAnalyzer:
         """Initialize the analyzer with configuration parameters."""
         self.exchange = ccxt.binance()
         self.symbol = 'BTC/USDT'
-        self.timeframes = ['15m', '30m', '1h', '3h', '6h', '12h', '1d']
+        self.timeframes = ['15m', '30m', '1h', '6h', '12h', '1d']
         self.candle_count = 1500
         self.data = {}
         self.results = {}
@@ -380,17 +380,14 @@ class BTCUSDTAnalyzer:
         
         return cross_analysis
     
-    def save_results(self, results: Dict[str, Any], filename: str = 'btcusdt_analysis.json'):
+    def save_results(self, results: Dict[str, Any], separate_files: bool = True):
         """
-        Save analysis results to JSON file.
+        Save analysis results to JSON files.
         
         Args:
             results (Dict[str, Any]): Analysis results
-            filename (str): Output filename
+            separate_files (bool): If True, save each timeframe to separate files
         """
-        # Use current working directory to make it cross-platform compatible
-        filepath = os.path.join(os.getcwd(), filename)
-        
         try:
             # Convert numpy types to native Python types for JSON serialization
             def convert_numpy_types(obj):
@@ -412,10 +409,45 @@ class BTCUSDTAnalyzer:
             # Convert the results
             serializable_results = convert_numpy_types(results)
             
-            with open(filepath, 'w') as f:
-                ujson.dump(serializable_results, f, indent=2, ensure_ascii=False)
-            
-            logger.info(f"Results saved to {filepath}")
+            if separate_files:
+                # Save each timeframe to a separate file
+                saved_files = []
+                for timeframe in self.timeframes:
+                    if timeframe in serializable_results['timeframe_analysis']:
+                        # Create individual timeframe result
+                        tf_result = {
+                            'metadata': {
+                                **serializable_results['metadata'],
+                                'timeframes_analyzed': [timeframe],
+                                'timeframe': timeframe
+                            },
+                            'timeframe_analysis': {
+                                timeframe: serializable_results['timeframe_analysis'][timeframe]
+                            }
+                        }
+                        
+                        # Save to individual file
+                        filename = f'btcusdt_analysis_{timeframe}.json'
+                        filepath = os.path.join(os.getcwd(), filename)
+                        
+                        with open(filepath, 'w') as f:
+                            ujson.dump(tf_result, f, indent=2, ensure_ascii=False)
+                        
+                        saved_files.append(filename)
+                        logger.info(f"Timeframe {timeframe} results saved to {filepath}")
+                
+                logger.info(f"All results saved to separate files: {', '.join(saved_files)}")
+                return saved_files
+            else:
+                # Save combined results to single file
+                filename = 'btcusdt_analysis_combined.json'
+                filepath = os.path.join(os.getcwd(), filename)
+                
+                with open(filepath, 'w') as f:
+                    ujson.dump(serializable_results, f, indent=2, ensure_ascii=False)
+                
+                logger.info(f"Combined results saved to {filepath}")
+                return [filename]
             
         except Exception as e:
             logger.error(f"Error saving results: {str(e)}")
@@ -431,8 +463,8 @@ def main():
         # Run analysis
         results = analyzer.run_analysis()
         
-        # Save results
-        analyzer.save_results(results)
+        # Save results to separate files for each timeframe
+        saved_files = analyzer.save_results(results)
         
         # Print summary
         print("\n" + "="*50)
@@ -443,7 +475,7 @@ def main():
         print(f"Timeframes: {', '.join(results['metadata']['timeframes_analyzed'])}")
         print(f"Candles per Timeframe: {results['metadata']['candles_per_timeframe']}")
         print(f"Total Indicators: {results['metadata']['total_indicators']}")
-        print("Results saved to: btcusdt_analysis.json")
+        print(f"Results saved to: {', '.join(saved_files)}")
         print("="*50)
         
     except Exception as e:

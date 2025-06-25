@@ -14,6 +14,7 @@ import pandas as pd
 import numpy as np
 import ccxt
 import json
+import os
 import warnings
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Any, Optional
@@ -387,7 +388,8 @@ class BTCUSDTAnalyzer:
             results (Dict[str, Any]): Analysis results
             filename (str): Output filename
         """
-        filepath = f"/home/runner/work/killer/killer/{filename}"
+        # Use current working directory to make it cross-platform compatible
+        filepath = os.path.join(os.getcwd(), filename)
         
         try:
             # Convert numpy types to native Python types for JSON serialization

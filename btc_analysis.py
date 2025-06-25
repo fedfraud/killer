@@ -390,8 +390,28 @@ class BTCUSDTAnalyzer:
         filepath = f"/home/runner/work/killer/killer/{filename}"
         
         try:
+            # Convert numpy types to native Python types for JSON serialization
+            def convert_numpy_types(obj):
+                if isinstance(obj, np.bool_):
+                    return bool(obj)
+                elif isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+                    return int(obj)
+                elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+                    return float(obj)
+                elif isinstance(obj, np.ndarray):
+                    return obj.tolist()
+                elif isinstance(obj, dict):
+                    return {k: convert_numpy_types(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [convert_numpy_types(item) for item in obj]
+                else:
+                    return obj
+            
+            # Convert the results
+            serializable_results = convert_numpy_types(results)
+            
             with open(filepath, 'w') as f:
-                ujson.dump(results, f, indent=2, ensure_ascii=False)
+                ujson.dump(serializable_results, f, indent=2, ensure_ascii=False)
             
             logger.info(f"Results saved to {filepath}")
             

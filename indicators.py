@@ -22,9 +22,21 @@ from sklearn.metrics import accuracy_score, mean_squared_error
 import warnings
 from typing import Dict, List, Tuple, Any, Optional
 import logging
+from collections import Counter
 
 # Configure logging
 logger = logging.getLogger(__name__)
+
+def simple_morlet(M, s=1.0, complete=True):
+    """Simple Morlet wavelet implementation."""
+    x = np.arange(0, M) - (M - 1.0) / 2
+    x = x / s
+    wavelet = np.exp(1j * 5 * x) * np.exp(-0.5 * (x**2))
+    
+    if not complete:
+        wavelet = np.real(wavelet)
+    
+    return wavelet
 
 class AdvancedIndicators:
     """
@@ -621,27 +633,25 @@ class AdvancedIndicators:
             Dict[str, Any]: SST-CWT results
         """
         try:
-            from scipy.signal import cwt, morlet2
-            
             # Define wavelet scales
             scales = np.logspace(0, 3, 50)  # 50 scales from 1 to 1000
             
-            # Perform CWT using Morlet wavelet
-            coefficients = cwt(data.values, morlet2, scales)
+            # Simplified CWT using convolution
+            coefficients = []
+            for scale in scales:
+                # Create Morlet wavelet
+                wavelet_len = min(len(data), int(10 * scale))
+                wavelet = simple_morlet(wavelet_len, scale, complete=True)
+                
+                # Convolve with data
+                coeff = np.convolve(data.values, wavelet, mode='same')
+                coefficients.append(coeff)
             
-            # Calculate instantaneous frequency (simplified)
-            phase = np.angle(coefficients)
-            inst_freq = np.diff(np.unwrap(phase, axis=1), axis=1) / (2 * np.pi)
+            coefficients = np.array(coefficients)
             
-            # Synchrosqueezing (simplified version)
-            # In practice, this requires more sophisticated implementation
+            # Calculate magnitude and phase
             magnitude = np.abs(coefficients)
-            
-            # Ridge extraction (find dominant frequency components)
-            ridges = []
-            for t in range(coefficients.shape[1]):
-                max_scale_idx = np.argmax(magnitude[:, t])
-                ridges.append(scales[max_scale_idx])
+            phase = np.angle(coefficients)
             
             # Calculate energy distribution
             energy = magnitude ** 2
@@ -653,8 +663,6 @@ class AdvancedIndicators:
                 'cwt_coefficients_magnitude': magnitude.tolist(),
                 'cwt_coefficients_phase': phase.tolist(),
                 'scales': scales.tolist(),
-                'instantaneous_frequency': inst_freq.tolist(),
-                'ridge_frequencies': ridges,
                 'energy_distribution': energy.tolist(),
                 'scale_energy': scale_energy.tolist(),
                 'time_energy': time_energy.tolist(),
@@ -743,9 +751,15 @@ class AdvancedIndicators:
         h = signal.copy()
         
         for _ in range(10):  # Max 10 sifting iterations
-            # Find local maxima and minima
-            maxima = signal.argrelextrema(h, np.greater)[0]
-            minima = signal.argrelextrema(h, np.less)[0]
+            # Find local maxima and minima using simple peak detection
+            maxima = []
+            minima = []
+            
+            for i in range(1, len(h) - 1):
+                if h[i] > h[i-1] and h[i] > h[i+1]:
+                    maxima.append(i)
+                elif h[i] < h[i-1] and h[i] < h[i+1]:
+                    minima.append(i)
             
             if len(maxima) < 2 or len(minima) < 2:
                 break
@@ -791,8 +805,6 @@ class AdvancedIndicators:
             Dict[str, Any]: Wavelet coherence analysis
         """
         try:
-            from scipy.signal import cwt, morlet2
-            
             # Ensure same length
             min_len = min(len(data1), len(data2))
             x1 = data1.values[:min_len]
@@ -801,9 +813,19 @@ class AdvancedIndicators:
             # Define scales for wavelet transform
             scales = np.logspace(0, 2, 30)  # 30 scales
             
+            # Simplified wavelet transform using convolution
+            def simple_cwt(signal, scales):
+                coeffs = []
+                for scale in scales:
+                    wavelet_len = min(len(signal), int(10 * scale))
+                    wavelet = simple_morlet(wavelet_len, scale, complete=True)
+                    coeff = np.convolve(signal, wavelet, mode='same')
+                    coeffs.append(coeff)
+                return np.array(coeffs)
+            
             # Compute CWT for both signals
-            cwt1 = cwt(x1, morlet2, scales)
-            cwt2 = cwt(x2, morlet2, scales)
+            cwt1 = simple_cwt(x1, scales)
+            cwt2 = simple_cwt(x2, scales)
             
             # Calculate cross-wavelet spectrum
             cross_wavelet = cwt1 * np.conj(cwt2)
@@ -814,7 +836,7 @@ class AdvancedIndicators:
             smooth_auto1 = np.abs(cwt1)**2
             smooth_auto2 = np.abs(cwt2)**2
             
-            coherence = smooth_cross / np.sqrt(smooth_auto1 * smooth_auto2)
+            coherence = smooth_cross / np.sqrt(smooth_auto1 * smooth_auto2 + 1e-10)
             
             # Phase difference
             phase_diff = np.angle(cross_wavelet)
@@ -1378,6 +1400,7 @@ class AdvancedIndicators:
             
             # Entropy of diagonal lines (ENTR)
             if diagonal_lines:
+                from collections import Counter
                 line_lengths = [line['length'] for line in diagonal_lines]
                 length_counts = Counter(line_lengths)
                 total_lines = len(diagonal_lines)
@@ -1457,6 +1480,464 @@ class AdvancedIndicators:
                         lines.append({'start': (i, j), 'length': length})
         
         return lines
+    
+    def transfer_entropy(self, x: pd.Series, y: pd.Series, k: int = 1) -> Dict[str, Any]:
+        """
+        Calculate Transfer Entropy between two time series.
+        
+        Args:
+            x, y (pd.Series): Input time series
+            k (int): Time lag
+            
+        Returns:
+            Dict[str, Any]: Transfer entropy analysis
+        """
+        try:
+            from collections import defaultdict
+            
+            # Ensure same length
+            min_len = min(len(x), len(y))
+            x_vals = x.values[:min_len]
+            y_vals = y.values[:min_len]
+            
+            # Discretize time series (using quantiles)
+            n_bins = 10
+            x_discrete = pd.cut(x_vals, bins=n_bins, labels=False)
+            y_discrete = pd.cut(y_vals, bins=n_bins, labels=False)
+            
+            # Calculate transfer entropy X -> Y
+            te_xy = self._calculate_te_direction(x_discrete, y_discrete, k)
+            
+            # Calculate transfer entropy Y -> X
+            te_yx = self._calculate_te_direction(y_discrete, x_discrete, k)
+            
+            # Net transfer entropy
+            net_te = te_xy - te_yx
+            
+            # Normalized transfer entropy
+            entropy_y = self._calculate_entropy(y_discrete)
+            norm_te_xy = te_xy / entropy_y if entropy_y > 0 else 0
+            norm_te_yx = te_yx / entropy_y if entropy_y > 0 else 0
+            
+            return {
+                'transfer_entropy_xy': float(te_xy),
+                'transfer_entropy_yx': float(te_yx),
+                'net_transfer_entropy': float(net_te),
+                'normalized_te_xy': float(norm_te_xy),
+                'normalized_te_yx': float(norm_te_yx),
+                'time_lag': k,
+                'n_bins': n_bins,
+                'dominant_direction': 'x_to_y' if te_xy > te_yx else 'y_to_x',
+                'coupling_strength': abs(net_te),
+                'bidirectional_coupling': abs(net_te) < 0.1 * max(te_xy, te_yx)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in transfer entropy calculation: {str(e)}")
+            return {'error': str(e)}
+    
+    def _calculate_te_direction(self, x: np.ndarray, y: np.ndarray, k: int) -> float:
+        """Calculate transfer entropy in one direction."""
+        try:
+            n = len(y)
+            if n <= k:
+                return 0.0
+            
+            # Count joint occurrences
+            from collections import defaultdict
+            
+            counts_y_future_past = defaultdict(int)
+            counts_y_future_past_x = defaultdict(int)
+            counts_y_past = defaultdict(int)
+            counts_y_past_x = defaultdict(int)
+            
+            for i in range(k, n):
+                y_future = y[i]
+                y_past = tuple(y[i-k:i])
+                x_past = tuple(x[i-k:i])
+                
+                counts_y_future_past[(y_future, y_past)] += 1
+                counts_y_future_past_x[(y_future, y_past, x_past)] += 1
+                counts_y_past[y_past] += 1
+                counts_y_past_x[(y_past, x_past)] += 1
+            
+            # Calculate transfer entropy
+            te = 0.0
+            total_samples = n - k
+            
+            for (y_future, y_past, x_past), count in counts_y_future_past_x.items():
+                if count > 0:
+                    p_yfuture_ypast_xpast = count / total_samples
+                    p_yfuture_ypast = counts_y_future_past.get((y_future, y_past), 0) / total_samples
+                    p_ypast_xpast = counts_y_past_x.get((y_past, x_past), 0) / total_samples
+                    p_ypast = counts_y_past.get(y_past, 0) / total_samples
+                    
+                    if all(p > 0 for p in [p_yfuture_ypast_xpast, p_yfuture_ypast, p_ypast_xpast, p_ypast]):
+                        te += p_yfuture_ypast_xpast * np.log2(
+                            (p_yfuture_ypast_xpast * p_ypast) / 
+                            (p_yfuture_ypast * p_ypast_xpast)
+                        )
+            
+            return te
+            
+        except:
+            return 0.0
+    
+    def _calculate_entropy(self, data: np.ndarray) -> float:
+        """Calculate Shannon entropy of discrete data."""
+        try:
+            counts = Counter(data)
+            total = len(data)
+            
+            entropy = 0
+            for count in counts.values():
+                p = count / total
+                if p > 0:
+                    entropy -= p * np.log2(p)
+            
+            return entropy
+        except:
+            return 0.0
+    
+    def granger_causality(self, x: pd.Series, y: pd.Series, max_lag: int = 5) -> Dict[str, Any]:
+        """
+        Test for Granger causality between two time series.
+        
+        Args:
+            x, y (pd.Series): Input time series
+            max_lag (int): Maximum lag to test
+            
+        Returns:
+            Dict[str, Any]: Granger causality test results
+        """
+        try:
+            # Simplified Granger causality test using linear regression
+            min_len = min(len(x), len(y))
+            x_vals = x.values[:min_len]
+            y_vals = y.values[:min_len]
+            
+            results = {}
+            
+            for lag in range(1, max_lag + 1):
+                if min_len <= lag:
+                    continue
+                
+                # Test X -> Y
+                ssr_restricted, ssr_unrestricted = self._granger_test_direction(x_vals, y_vals, lag)
+                f_stat_xy = ((ssr_restricted - ssr_unrestricted) / lag) / (ssr_unrestricted / (min_len - 2 * lag - 1))
+                p_value_xy = 1 - stats.f.cdf(f_stat_xy, lag, min_len - 2 * lag - 1)
+                
+                # Test Y -> X
+                ssr_restricted_yx, ssr_unrestricted_yx = self._granger_test_direction(y_vals, x_vals, lag)
+                f_stat_yx = ((ssr_restricted_yx - ssr_unrestricted_yx) / lag) / (ssr_unrestricted_yx / (min_len - 2 * lag - 1))
+                p_value_yx = 1 - stats.f.cdf(f_stat_yx, lag, min_len - 2 * lag - 1)
+                
+                results[f'lag_{lag}'] = {
+                    'x_granger_causes_y': {
+                        'f_statistic': float(f_stat_xy),
+                        'p_value': float(p_value_xy),
+                        'significant': p_value_xy < 0.05
+                    },
+                    'y_granger_causes_x': {
+                        'f_statistic': float(f_stat_yx),
+                        'p_value': float(p_value_yx),
+                        'significant': p_value_yx < 0.05
+                    }
+                }
+            
+            # Summary statistics
+            min_p_xy = min([results[lag]['x_granger_causes_y']['p_value'] for lag in results])
+            min_p_yx = min([results[lag]['y_granger_causes_x']['p_value'] for lag in results])
+            
+            return {
+                'lag_results': results,
+                'summary': {
+                    'x_causes_y': min_p_xy < 0.05,
+                    'y_causes_x': min_p_yx < 0.05,
+                    'bidirectional': min_p_xy < 0.05 and min_p_yx < 0.05,
+                    'min_p_value_xy': float(min_p_xy),
+                    'min_p_value_yx': float(min_p_yx)
+                },
+                'max_lag_tested': max_lag
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in Granger causality test: {str(e)}")
+            return {'error': str(e)}
+    
+    def _granger_test_direction(self, x: np.ndarray, y: np.ndarray, lag: int) -> Tuple[float, float]:
+        """Perform Granger test in one direction."""
+        try:
+            from sklearn.linear_model import LinearRegression
+            
+            n = len(y)
+            
+            # Prepare data
+            X_restricted = []  # Only lags of Y
+            X_unrestricted = []  # Lags of both Y and X
+            Y_target = []
+            
+            for i in range(lag, n):
+                # Target
+                Y_target.append(y[i])
+                
+                # Restricted model (only Y lags)
+                y_lags = [y[i - j] for j in range(1, lag + 1)]
+                X_restricted.append(y_lags)
+                
+                # Unrestricted model (Y and X lags)
+                x_lags = [x[i - j] for j in range(1, lag + 1)]
+                X_unrestricted.append(y_lags + x_lags)
+            
+            X_restricted = np.array(X_restricted)
+            X_unrestricted = np.array(X_unrestricted)
+            Y_target = np.array(Y_target)
+            
+            # Fit models
+            model_restricted = LinearRegression().fit(X_restricted, Y_target)
+            model_unrestricted = LinearRegression().fit(X_unrestricted, Y_target)
+            
+            # Calculate residual sum of squares
+            y_pred_restricted = model_restricted.predict(X_restricted)
+            y_pred_unrestricted = model_unrestricted.predict(X_unrestricted)
+            
+            ssr_restricted = np.sum((Y_target - y_pred_restricted) ** 2)
+            ssr_unrestricted = np.sum((Y_target - y_pred_unrestricted) ** 2)
+            
+            return ssr_restricted, ssr_unrestricted
+            
+        except:
+            return 1.0, 1.0  # Return equal SSR if error occurs
+    
+    def phase_space_reconstruction(self, data: pd.Series, delay: int = 1, dimension: int = 3) -> Dict[str, Any]:
+        """
+        Reconstruct phase space using delay embedding.
+        
+        Args:
+            data (pd.Series): Input time series
+            delay (int): Time delay
+            dimension (int): Embedding dimension
+            
+        Returns:
+            Dict[str, Any]: Phase space reconstruction results
+        """
+        try:
+            x = data.values
+            n = len(x)
+            
+            # Check if we have enough data
+            if n < dimension * delay:
+                return {'error': 'Insufficient data for phase space reconstruction'}
+            
+            # Create embedded vectors
+            embedded = []
+            for i in range(n - (dimension - 1) * delay):
+                vector = [x[i + j * delay] for j in range(dimension)]
+                embedded.append(vector)
+            
+            embedded = np.array(embedded)
+            
+            # Calculate phase space characteristics
+            # Correlation dimension estimate
+            correlation_dim = self._estimate_correlation_dimension(embedded)
+            
+            # Lyapunov exponent estimate (simplified)
+            lyapunov = self._estimate_lyapunov_exponent(embedded)
+            
+            # Phase space volume
+            if embedded.shape[0] > 1:
+                # Use bounding box volume as approximation
+                ranges = np.ptp(embedded, axis=0)
+                volume = np.prod(ranges)
+            else:
+                volume = 0
+            
+            # Attractor characteristics
+            centroid = np.mean(embedded, axis=0)
+            max_distance = np.max(np.linalg.norm(embedded - centroid, axis=1))
+            
+            # Poincaré return map (simplified)
+            if len(embedded) > 10:
+                return_times = self._calculate_return_times(embedded)
+            else:
+                return_times = []
+            
+            return {
+                'embedded_vectors': embedded.tolist(),
+                'embedding_dimension': dimension,
+                'time_delay': delay,
+                'n_points': len(embedded),
+                'correlation_dimension': float(correlation_dim),
+                'lyapunov_exponent': float(lyapunov),
+                'phase_space_volume': float(volume),
+                'attractor_centroid': centroid.tolist(),
+                'max_distance_from_centroid': float(max_distance),
+                'return_times': return_times,
+                'is_chaotic': lyapunov > 0,
+                'is_periodic': len(set(return_times)) < len(return_times) * 0.5 if return_times else False
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in phase space reconstruction: {str(e)}")
+            return {'error': str(e)}
+    
+    def _estimate_correlation_dimension(self, embedded: np.ndarray) -> float:
+        """Estimate correlation dimension using Grassberger-Procaccia algorithm."""
+        try:
+            from sklearn.metrics.pairwise import euclidean_distances
+            
+            # Calculate pairwise distances
+            distances = euclidean_distances(embedded)
+            
+            # Remove self-distances
+            np.fill_diagonal(distances, np.inf)
+            
+            # Calculate correlation integrals for different radii
+            radii = np.logspace(-2, 0, 10) * np.std(distances)
+            correlation_integrals = []
+            
+            for r in radii:
+                count = np.sum(distances < r)
+                total_pairs = embedded.shape[0] * (embedded.shape[0] - 1)
+                c_r = count / total_pairs if total_pairs > 0 else 0
+                correlation_integrals.append(c_r + 1e-10)  # Add small value to avoid log(0)
+            
+            # Estimate dimension from slope of log-log plot
+            log_radii = np.log(radii)
+            log_ci = np.log(correlation_integrals)
+            
+            # Linear regression
+            if len(log_radii) > 2:
+                slope = np.polyfit(log_radii, log_ci, 1)[0]
+                return max(0, slope)  # Dimension should be non-negative
+            else:
+                return 0
+                
+        except:
+            return 0
+    
+    def _estimate_lyapunov_exponent(self, embedded: np.ndarray) -> float:
+        """Simplified Lyapunov exponent estimation."""
+        try:
+            from sklearn.neighbors import NearestNeighbors
+            
+            if len(embedded) < 10:
+                return 0
+            
+            # Find nearest neighbors
+            nbrs = NearestNeighbors(n_neighbors=2).fit(embedded[:-1])
+            distances, indices = nbrs.kneighbors(embedded[:-1])
+            
+            # Calculate divergence rates
+            divergences = []
+            for i in range(len(embedded) - 1):
+                if i > 0 and indices[i, 1] < len(embedded) - 1:
+                    # Distance between trajectories at time t
+                    d0 = distances[i, 1]
+                    
+                    # Distance between trajectories at time t+1
+                    idx1 = i + 1
+                    idx2 = indices[i, 1] + 1
+                    
+                    if idx2 < len(embedded):
+                        d1 = np.linalg.norm(embedded[idx1] - embedded[idx2])
+                        
+                        if d0 > 0 and d1 > 0:
+                            divergences.append(np.log(d1 / d0))
+            
+            # Estimate Lyapunov exponent
+            if divergences:
+                return np.mean(divergences)
+            else:
+                return 0
+                
+        except:
+            return 0
+    
+    def _calculate_return_times(self, embedded: np.ndarray) -> List[int]:
+        """Calculate Poincaré return times."""
+        try:
+            # Use first return to neighborhood
+            threshold = np.std(embedded) * 0.1
+            start_point = embedded[0]
+            
+            return_times = []
+            for i in range(1, len(embedded)):
+                distance = np.linalg.norm(embedded[i] - start_point)
+                if distance < threshold:
+                    return_times.append(i)
+                    if len(return_times) >= 10:  # Limit number of returns
+                        break
+            
+            return return_times
+            
+        except:
+            return []
+    
+    def multiscale_entropy(self, data: pd.Series, max_scale: int = 10) -> Dict[str, Any]:
+        """Calculate Multiscale Entropy for complexity analysis across scales."""
+        try:
+            x = data.values
+            n = len(x)
+            
+            entropies = []
+            scales = range(1, min(max_scale + 1, n // 10))
+            
+            for scale in scales:
+                # Coarse-grain the time series
+                if scale == 1:
+                    coarse_grained = x
+                else:
+                    n_coarse = n // scale
+                    coarse_grained = np.zeros(n_coarse)
+                    for i in range(n_coarse):
+                        coarse_grained[i] = np.mean(x[i*scale:(i+1)*scale])
+                
+                # Calculate sample entropy
+                sample_ent = self._sample_entropy(coarse_grained, m=2, r=0.2)
+                entropies.append(sample_ent)
+            
+            return {
+                'scales': list(scales),
+                'entropies': entropies,
+                'complexity_index': float(np.sum(entropies)),
+                'max_entropy': float(max(entropies)) if entropies else 0,
+                'analysis_type': 'multiscale_entropy'
+            }
+        except Exception as e:
+            return {'error': str(e)}
+    
+    def _sample_entropy(self, data: np.ndarray, m: int = 2, r: float = 0.2) -> float:
+        """Calculate sample entropy."""
+        try:
+            N = len(data)
+            
+            def _maxdist(xi, xj, m):
+                return max([abs(ua - va) for ua, va in zip(xi[0:m], xj[0:m])])
+            
+            def _phi(m):
+                patterns = np.array([data[i:i + m] for i in range(N - m + 1)])
+                C = np.zeros(N - m + 1)
+                
+                for i in range(N - m + 1):
+                    template_i = patterns[i]
+                    for j in range(N - m + 1):
+                        if i != j:
+                            if _maxdist(template_i, patterns[j], m) <= r * np.std(data):
+                                C[i] += 1
+                
+                phi = np.mean(C / (N - m))
+                return phi
+            
+            phi_m = _phi(m)
+            phi_m1 = _phi(m + 1)
+            
+            if phi_m == 0 or phi_m1 == 0:
+                return 0
+            
+            return -np.log(phi_m1 / phi_m)
+        except:
+            return 0.0
     
     def information_theoretic_measures(self, data: pd.DataFrame) -> Dict[str, Any]:
         """Calculate various information theoretic measures."""
